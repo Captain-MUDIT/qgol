@@ -1,0 +1,177 @@
+<style>
+:root { --ink: #1e2328; --muted: #5b636b; --blue: #2e43c9; }
+body { margin: 0; font-family: Calibri, Carlito, Arial, sans-serif; color: var(--ink); background: transparent; }
+canvas { width: 100%; display: block; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 8px; }
+button { white-space: nowrap; }
+@media (max-width: 900px) { select { display: none; } }  /* narrow boards: keep the bar on one line */
+button { font: inherit; font-weight: 600; border: 0; border-radius: 4px; background: var(--blue); color: #fff;
+  padding: 8px 20px; cursor: pointer; min-width: 92px; }
+button:hover { background: #2436a8; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #9fb0ff; outline-offset: 2px; }
+input[type=range] { flex: 1; accent-color: var(--blue); }
+.time { font-variant-numeric: tabular-nums; min-width: 132px; font-weight: 600; }
+#moments { display: inline-flex; gap: 6px; }
+#moments button { background: #fff; color: var(--blue); border: 1px solid #c4cad0; min-width: 0; padding: 7px 14px; font-weight: 500; }
+#moments button:hover { background: #eef0fb; }
+select { font: inherit; border: 1px solid #c4cad0; border-radius: 8px; padding: 5px 8px; background: #fff; color: var(--ink); }
+</style>
+<canvas id="cv"></canvas>
+<div class="bar">
+  <button id="play">Play</button>
+  <span id="moments"></span>
+  <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="Time">
+  <span class="time" id="time"></span>
+  <select id="speed" aria-label="Playback speed">
+    <option value="0.5">Slow</option><option value="1" selected>Normal</option><option value="2.5">Fast</option>
+  </select>
+</div>
+<script>
+const D = __DATA__;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const playBtn = document.getElementById('play'), scrub = document.getElementById('scrub');
+const timeEl = document.getElementById('time'), speedEl = document.getElementById('speed');
+const tMax = D.tau[D.tau.length - 1], dt = D.tau[1] - D.tau[0];
+const onlyClassical = D.boards.every(b => b.kind === 'classical');
+let t = 0, playing = false, last = null, W = 0;
+const H = D.height;
+
+function resize() {
+  W = cv.clientWidth;
+  const r = window.devicePixelRatio || 1;
+  cv.width = W * r; cv.height = H * r; cv.style.height = H + 'px';
+  ctx.setTransform(r, 0, 0, r, 0, 0);
+  draw();
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function stone(x, y, r, a) {
+  if (a < 0.01) return;
+  ctx.save(); ctx.globalAlpha = Math.min(1, a);
+  ctx.beginPath(); ctx.arc(x + r * 0.08, y + r * 0.14, r, 0, 2 * Math.PI); ctx.fillStyle = 'rgba(60,35,5,.35)'; ctx.fill();
+  const g = ctx.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.08, x, y, r);
+  g.addColorStop(0, '#6d6862'); g.addColorStop(0.45, '#2b2824'); g.addColorStop(1, '#121110');
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fillStyle = g; ctx.fill();
+  ctx.restore();
+}
+
+function drawBoard(b, x, y, w, h, k, kc) {
+  const R = D.rows, C = D.cols, oneRow = R === 1;
+  ctx.fillStyle = '#1e2328'; ctx.font = "600 15px Calibri, Arial, sans-serif"; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(b.title, x + 2, y + 16);
+  const threads = b.kind === 'quantum' && D.threads && oneRow;
+  const top = y + 28, labelH = oneRow ? 22 : 0, arcH = threads ? Math.min(110, h * 0.42) : 0;
+  const avW = w - 8, avH = h - 28 - labelH - arcH - 6;
+  const sp = Math.min(avW / C, avH / R, 78);
+  const bw = sp * C, bh = sp * R, bx = x + (w - bw) / 2, by = top + arcH;
+  // wooden board
+  const wood = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
+  wood.addColorStop(0, '#e6c48a'); wood.addColorStop(1, '#d3a964');
+  roundRect(bx, by, bw, bh, 10); ctx.fillStyle = wood; ctx.fill();
+  // frozen edge cells
+  (D.walls || []).forEach(i => {
+    const cx = bx + (i % C) * sp;
+    ctx.fillStyle = 'rgba(70,40,10,.16)'; ctx.fillRect(cx + 1, by + 1, sp - 2, bh - 2);
+  });
+  // grid lines through the stone centres
+  ctx.strokeStyle = 'rgba(80,50,15,.6)'; ctx.lineWidth = 1.2; ctx.beginPath();
+  for (let r = 0; r < R; r++) { const yy = by + (r + 0.5) * sp; ctx.moveTo(bx + sp * 0.5, yy); ctx.lineTo(bx + bw - sp * 0.5, yy); }
+  for (let c = 0; c < C; c++) {
+    const xx = bx + (c + 0.5) * sp;
+    if (oneRow) { ctx.moveTo(xx, by + sp * 0.22); ctx.lineTo(xx, by + bh - sp * 0.22); }
+    else { ctx.moveTo(xx, by + sp * 0.5); ctx.lineTo(xx, by + bh - sp * 0.5); }
+  }
+  ctx.stroke();
+  const rad = sp * (D.rings && b.kind === 'quantum' ? 0.3 : 0.4), pos = i => [bx + ((i % C) + 0.5) * sp, by + (Math.floor(i / C) + 0.5) * sp];
+  // threads: which pairs of cells are correlated (mutual information)
+  if (threads && D.mi) {
+    D.pairs.forEach(([i, j], p) => {
+      const wgt = D.mi[k][p] / D.mimax;
+      if (wgt < 0.05) return;
+      const [x1, y1] = pos(i), [x2] = pos(j), hh = Math.min(arcH - 6, (j - i) * sp * 0.32);
+      ctx.beginPath(); ctx.moveTo(x1, y1 - rad); ctx.quadraticCurveTo((x1 + x2) / 2, y1 - rad - hh * 2, x2, y1 - rad);
+      ctx.strokeStyle = `rgba(46,67,201,${0.12 + 0.8 * wgt})`; ctx.lineWidth = 1 + 4 * wgt; ctx.stroke();
+    });
+  }
+  const n = R * C;
+  for (let i = 0; i < n; i++) {
+    const [cx, cy] = pos(i), wall = (D.walls || []).includes(i);
+    if (b.kind === 'classical') { stone(cx, cy, rad, D.c[kc][i]); continue; }
+    const p = D.q[k][i];
+    if (!wall) {
+      ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = 'rgba(80,50,15,.35)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, cy, rad, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+    }
+    stone(cx, cy, rad, p);
+    if (D.rings) {
+      const s = D.s[k][i];
+      if (s > 0.02) {
+        ctx.save(); ctx.globalAlpha = Math.min(1, 0.25 + s); ctx.strokeStyle = '#2e43c9'; ctx.lineWidth = 1 + sp * 0.1 * s;
+        ctx.beginPath(); ctx.arc(cx, cy, rad + 2 + ctx.lineWidth / 2, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+      }
+    }
+    if (oneRow && !wall) {
+      ctx.fillStyle = '#5b636b'; ctx.font = "500 12px Calibri, Arial, sans-serif"; ctx.textAlign = 'center';
+      ctx.fillText(Math.round(p * 100) + '%', cx, by + bh + 16); ctx.textAlign = 'start';
+    }
+  }
+  if (oneRow && D.walls && D.walls.length) {
+    ctx.fillStyle = '#7a6a55'; ctx.font = "500 11px Calibri, Arial, sans-serif"; ctx.textAlign = 'center';
+    ctx.fillText('edge', bx + sp, by + bh + 16); ctx.fillText('edge', bx + bw - sp, by + bh + 16); ctx.textAlign = 'start';
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  const k = Math.min(D.tau.length - 1, Math.round(t / dt));
+  const kc = Math.min(D.c.length - 1, Math.floor(t + 1e-9));
+  const nb = D.boards.length;
+  if (D.layout === 'stack') {
+    const bh = H / nb;
+    D.boards.forEach((b, i) => drawBoard(b, 0, i * bh, W, bh - 6, k, kc));
+  } else {
+    const gap = 28, bw = (W - gap * (nb - 1)) / nb;
+    D.boards.forEach((b, i) => drawBoard(b, i * (bw + gap), 0, bw, H, k, kc));
+  }
+  timeEl.textContent = onlyClassical ? `Generation ${kc}` : `Generation ${t.toFixed(1)}`;
+  scrub.value = Math.round(1000 * t / tMax);
+}
+
+function tick(now) {
+  if (!playing) return;
+  if (last !== null) t += (now - last) / 1000 * D.rate * parseFloat(speedEl.value);
+  last = now;
+  if (t >= tMax) { t = tMax; setPlaying(false); playBtn.textContent = 'Replay'; }
+  draw();
+  if (playing) requestAnimationFrame(tick);
+}
+
+function setPlaying(on) {
+  playing = on; last = null; playBtn.textContent = on ? 'Pause' : 'Play';
+  if (on) requestAnimationFrame(tick);
+}
+
+playBtn.onclick = () => { if (!playing && t >= tMax) t = 0; setPlaying(!playing); };
+(D.moments || []).forEach(([label, at]) => {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.onclick = () => { setPlaying(false); t = Math.min(at, tMax); draw(); };
+  document.getElementById('moments').appendChild(b);
+});
+// slide keys still work after clicking inside the board
+window.addEventListener('keydown', e => {
+  const nav = window.parent && window.parent.__qgolNav;
+  if (!nav || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (['ArrowRight', 'PageDown'].includes(e.key)) { e.preventDefault(); nav(1); }
+  if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); nav(-1); }
+});
+scrub.oninput = () => { setPlaying(false); t = tMax * scrub.value / 1000; draw(); };
+window.addEventListener('resize', resize);
+document.fonts && document.fonts.ready.then(resize);
+resize();
+if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) setPlaying(true);
+</script>
