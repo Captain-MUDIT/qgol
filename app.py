@@ -94,7 +94,7 @@ def run_grid(R, C, moore, start, tau_max=16.0, frames=96):
 
 
 def saved(fn):
-    """Cache a slow, argument-free computation in assets/cache/<name>.pkl; delete the file to recompute."""
+    """Save the result in assets/cache so slow slides open instantly. Delete the file to recompute."""
     import functools, pickle
 
     @functools.cache
@@ -109,7 +109,7 @@ def saved(fn):
 
 @saved
 def run_block():
-    """Paper Fig. 7/8 scaled to 16 cells: a block of 8 alive cells."""
+    """Paper Fig. 7/8 with 16 cells."""
     bits = pattern(16, (4, "1" * 8))
     r = evolve(bits, chain(16), 9.0, 90, pairs=False)
     r["classical"] = classical(bits, chain(16), 9)
@@ -118,8 +118,7 @@ def run_block():
 
 @saved
 def equilibrium(n=16, per=4, seed=0):
-    """Paper Fig. 11 (top row): long-time density and diversity vs starting density, random 16-cell boards.
-    Classical: all 2^16 boards, averaged over steps 83-100. Quantum: `per` random boards per density, tau 15.9-19.1."""
+    """Paper Fig. 11: density and diversity after a long time, for random 16-cell starting boards."""
     from scipy.sparse.linalg import expm_multiply
     nb = chain(n)
     bits = ((np.arange(2 ** n)[:, None] >> np.arange(n)) & 1).astype(np.int8)
@@ -142,7 +141,7 @@ def equilibrium(n=16, per=4, seed=0):
     for k in ks:
         d, v = [], []
         for _ in range(per):
-            # ponytail: two calls because scipy's expm_multiply diverges when start != 0
+            # expm_multiply gives wrong results when start != 0, so go to 15.9 first
             psi = expm_multiply(A * 15.9, fock(rng.permutation([1] * k + [0] * (n - k))))
             D = (np.abs(expm_multiply(A, psi, start=0, stop=3.2, num=9, endpoint=True)) ** 2 @ bits > 0.5).astype(int)
             d.append(D.mean())
@@ -457,7 +456,7 @@ BLUES = [[0, "#ffffff"], [1, BLUE]]
 
 
 def grid_fig(panels, rows, cols, h, vspace=0.2):
-    """Heatmaps laid out like the paper's figures: time across, cell (or size/distance) up. panels = (title, x, y, z, scale, zmax, ylabel)."""
+    """Heatmaps with time on the x axis, like the paper's figures."""
     fig = make_subplots(rows, cols, subplot_titles=[p[0] for p in panels], horizontal_spacing=0.07, vertical_spacing=vspace)
     for k, (_, x, y, z, scale, zmax, ylab) in enumerate(panels):
         r, c = divmod(k, cols)
@@ -471,7 +470,7 @@ def grid_fig(panels, rows, cols, h, vspace=0.2):
 
 
 def cluster_counts(D, top):
-    """Paper's clustering function C(l, t): number of alive clusters of size l at each time (rows l = 1..top)."""
+    """Clustering function C(l, t) from the paper: number of clusters of size l at each time."""
     out = np.zeros((top, len(D)))
     for t, row in enumerate(D):
         for s in clusters(row):
@@ -814,7 +813,7 @@ with st.container(key="nav", horizontal=True):
     st.button("→", key="next", on_click=move, args=(1,), disabled=i == len(SLIDES) - 1)
 with st.container(key="keys"):
     st.iframe("""<script>
-// eval in the parent so the handlers outlive this iframe, which Streamlit may remount on any rerun
+// run in the parent page so it keeps working when Streamlit reloads this iframe
 window.parent.eval(`if (!window.__qgolKeys) {
   window.__qgolKeys = true;
   window.__qgolNav = d => { const b = document.querySelector(d > 0 ? '.st-key-next button' : '.st-key-prev button'); if (b && !b.disabled) b.click(); };

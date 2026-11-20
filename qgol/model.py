@@ -93,7 +93,7 @@ def fock(bits):
 def evolve(bits, nbrs, tau_max, frames, rule=RULE, pairs=True):
     """Exact Schrodinger evolution; returns observables stacked over `frames + 1` time points."""
     n = len(bits)
-    # ponytail: keeps every frame in memory (frames * 2^n), fine up to ~16 qubits
+    # keeps every frame in memory, fine up to ~16 qubits
     states = expm_multiply((-1j * np.pi / 2) * hamiltonian(n, nbrs, rule), fock(bits),
                            start=0, stop=tau_max, num=frames + 1, endpoint=True)
     rec = [observe(psi, n, pairs) for psi in states]

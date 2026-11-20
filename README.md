@@ -11,10 +11,12 @@ neighbours are alive. Evolving it exactly (NumPy/SciPy) and as Trotter circuits 
 
 ```
 uv sync
-uv run streamlit run app.py          # interactive app
+uv run streamlit run app.py          # presentation
 uv run python check.py               # checks against the paper's figures (~20 s)
 uv run python check.py --big         # also L = 19 and 20 chains (~6 min)
 ```
+
+The presentation is a slide deck: arrow keys change slides, `?s=N` opens slide N and `?notes=1` shows speaker notes.
 
 ## Files
 
@@ -22,10 +24,12 @@ uv run python check.py --big         # also L = 19 and 20 chains (~6 min)
 |---|---|
 | `qgol/model.py` | Hamiltonian, exact evolution, classical rule, observables (density, entropies, mutual information, concurrence) |
 | `qgol/circuits.py` | Qiskit Trotter circuits (multi-controlled RX gates), 1st and 2nd order |
-| `app.py` | Streamlit app: a 7-step guided walkthrough (rule → quantum → blinker → entanglement → circuit → 2D → paper check), each with speaker notes. `?step=N` opens step N |
+| `app.py` | The slide deck: 20 slides + 4 backup, including the paper's Figs. 1, 2, 7/8 and 11 recomputed |
 | `qgol/board.html` | Animated Go-board view used by the app (stones = alive, faint stones = partly alive, blue = entangled) |
 | `check.py` | Asserts results match the paper's Fig. 2, 3b, 6b and that Trotter circuits converge |
 | `qniverse/*.qasm` | OpenQASM 2.0 circuits to paste into Qniverse's editor (3-qubit blinker); `make_qasm.py` regenerates and checks them |
+| `screenshots/` | Results of the QASM files on Qniverse, named after the files |
+| `assets/` | Qniverse charts shown in the deck, and saved results of the two slow slides (`assets/cache`) |
 
 ## Matches with the paper
 
