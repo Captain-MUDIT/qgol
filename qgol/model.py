@@ -107,6 +107,11 @@ def state_at(bits, nbrs, tau, rule=RULE):
     return expm_multiply((-1j * np.pi / 2 * tau) * hamiltonian(len(bits), nbrs, rule), fock(bits))
 
 
+def clusters(row):
+    """Sizes of the runs of alive cells: [0,1,1,0,1] -> [2, 1]."""
+    return [len(s) for s in "".join(str(int(c)) for c in row).split("0") if s]
+
+
 def pattern(L, *blocks):
     """pattern(11, (4, '101')) -> 11 sites, '101' placed starting at site 4."""
     b = np.zeros(L, dtype=np.int8)

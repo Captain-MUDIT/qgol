@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from qgol.model import chain, classical, evolve, observe, pattern, state_at, torus
+from qgol.model import chain, classical, clusters, evolve, fock, hamiltonian, observe, pattern, state_at, torus
 
 st.set_page_config(page_title="Quantum Game of Life", page_icon="⚫", layout="wide", initial_sidebar_state="collapsed")
 
@@ -91,6 +91,65 @@ def run_grid(R, C, moore, start, tau_max=16.0, frames=96):
     r = evolve(bits, nb, tau_max, frames, pairs=False)
     r["classical"] = classical(bits, nb, int(tau_max))
     return r
+
+
+def saved(fn):
+    """Cache a slow, argument-free computation in assets/cache/<name>.pkl; delete the file to recompute."""
+    import functools, pickle
+
+    @functools.cache
+    def wrap():
+        f = ROOT / "assets" / "cache" / f"{fn.__name__}.pkl"
+        if not f.exists():
+            f.parent.mkdir(exist_ok=True)
+            f.write_bytes(pickle.dumps(fn()))
+        return pickle.loads(f.read_bytes())
+    return wrap
+
+
+@saved
+def run_block():
+    """Paper Fig. 7/8 scaled to 16 cells: a block of 8 alive cells."""
+    bits = pattern(16, (4, "1" * 8))
+    r = evolve(bits, chain(16), 9.0, 90, pairs=False)
+    r["classical"] = classical(bits, chain(16), 9)
+    return r
+
+
+@saved
+def equilibrium(n=16, per=4, seed=0):
+    """Paper Fig. 11 (top row): long-time density and diversity vs starting density, random 16-cell boards.
+    Classical: all 2^16 boards, averaged over steps 83-100. Quantum: `per` random boards per density, tau 15.9-19.1."""
+    from scipy.sparse.linalg import expm_multiply
+    nb = chain(n)
+    bits = ((np.arange(2 ** n)[:, None] >> np.arange(n)) & 1).astype(np.int8)
+    B, k0, dens, late = bits.copy(), bits.sum(1), np.zeros(2 ** n), []
+    for t in range(101):
+        if t >= 83:
+            dens += B.mean(1) / 18
+            late.append(B)
+        cnt = np.zeros_like(B)
+        for i, js in nb.items():
+            cnt[:, i] = B[:, js].sum(1)
+        B = B ^ np.isin(cnt, (2, 3)).astype(np.int8)
+    rng = np.random.default_rng(seed)
+    div = lambda D: np.mean([len(set(clusters(row))) for row in D])
+    ks = np.arange(2, n, 2)
+    cl = dict(rho=np.arange(n + 1) / n, dens=[dens[k0 == k].mean() for k in range(n + 1)],
+              div=[div(np.concatenate([s[rng.choice(np.flatnonzero(k0 == k), 300)] for s in late])) for k in range(n + 1)])
+    A = (-1j * np.pi / 2) * hamiltonian(n, nb)
+    qd, qv = [], []
+    for k in ks:
+        d, v = [], []
+        for _ in range(per):
+            # ponytail: two calls because scipy's expm_multiply diverges when start != 0
+            psi = expm_multiply(A * 15.9, fock(rng.permutation([1] * k + [0] * (n - k))))
+            D = (np.abs(expm_multiply(A, psi, start=0, stop=3.2, num=9, endpoint=True)) ** 2 @ bits > 0.5).astype(int)
+            d.append(D.mean())
+            v.append(div(D))
+        qd.append(np.mean(d))
+        qv.append(np.mean(v))
+    return dict(cl=cl, q=dict(rho=ks / n, dens=qd, div=qv))
 
 
 def board(r, boards, rows, cols, height, walls=(), rings=False, threads=False, rate=1.2, moments=()):
@@ -310,6 +369,9 @@ def s_references():
             "Scientific American 223, 120 (1970).",
             "M. Suzuki, “Generalized Trotter's formula and systematic approximants of exponential operators”, "
             "Commun. Math. Phys. 51, 183 (1976).",
+            "T. M. Wintermantel, Y. Wang, G. Lochead, S. Shevate, G. K. Brennen and S. Whitlock, “Unitary and nonunitary "
+            "quantum cellular automata with Rydberg arrays”, Phys. Rev. Lett. 124, 070503 (2020).",
+            "H. Bernien et al., “Probing many-body dynamics on a 51-atom quantum simulator”, Nature 551, 579 (2017).",
             "Qiskit documentation, IBM Quantum, docs.quantum.ibm.com",
             "Qniverse quantum computing platform, C-DAC Bengaluru, qniverse.in"]
     st.markdown('<ol class="refs">' + "".join(f"<li>{r}</li>" for r in refs) + "</ol>", unsafe_allow_html=True)
@@ -389,6 +451,144 @@ def s_blinker():
     return ("- Left: every moment stacked as a row, top to bottom. Classical never returns; quantum keeps returning.\n"
             "- Right: the spikes are the revivals. Classical drops to 0 after the first step and stays there.\n"
             "- The paper calls this a quantum blinker.")
+
+
+BLUES = [[0, "#ffffff"], [1, BLUE]]
+
+
+def grid_fig(panels, rows, cols, h, vspace=0.2):
+    """Heatmaps laid out like the paper's figures: time across, cell (or size/distance) up. panels = (title, x, y, z, scale, zmax, ylabel)."""
+    fig = make_subplots(rows, cols, subplot_titles=[p[0] for p in panels], horizontal_spacing=0.07, vertical_spacing=vspace)
+    for k, (_, x, y, z, scale, zmax, ylab) in enumerate(panels):
+        r, c = divmod(k, cols)
+        fig.add_trace(go.Heatmap(x=x, y=y, z=z, colorscale=scale, zmin=0, zmax=zmax, showscale=False,
+                                 hovertemplate=f"generation %{{x:.1f}}<br>{ylab} %{{y}}<br>%{{z:.2f}}<extra></extra>"), r + 1, c + 1)
+        fig.update_yaxes(title=ylab, row=r + 1, col=c + 1)
+        fig.update_xaxes(title="generation", row=r + 1, col=c + 1)
+    style(fig, h).update_layout(margin_t=40)
+    fig.update_annotations(font=dict(family="Calibri, Arial, sans-serif", size=17, color=INK))
+    return fig
+
+
+def cluster_counts(D, top):
+    """Paper's clustering function C(l, t): number of alive clusters of size l at each time (rows l = 1..top)."""
+    out = np.zeros((top, len(D)))
+    for t, row in enumerate(D):
+        for s in clusters(row):
+            out[min(s, top) - 1, t] += 1
+    return out
+
+
+def s_views():
+    head("Results: Four Views of the Blinker (Paper Fig. 1)",
+         "Classical cells drift apart; the quantum blinker stays put and its two live cells keep blinking on and off.")
+    r = run_chain(BLINKER)
+    tau, cells, steps = r["tau"], np.arange(1, L + 1), np.arange(len(r["classical"]))
+    D = (r["n"] > 0.5).astype(int)
+    panels = [("(a) Classical Life", steps, cells, r["classical"].T, STONE, 1, "cell"),
+              ("(b) Quantum: chance each cell is alive", tau, cells, r["n"].T, STONE, 1, "cell"),
+              ("(c) Quantum, rounded: alive if above 50%", tau, cells, D.T, STONE, 1, "cell"),
+              ("(d) Number of clusters of each size", tau, np.arange(1, 6), cluster_counts(D, 5), BLUES, 2, "cluster size")]
+    show(grid_fig(panels, 2, 2, 600))
+    return ("- Same four panels as the paper's Fig. 1, on our 13-cell chain (the paper uses 32 cells with tensor networks).\n"
+            "- (c) rounds each cell to alive or dead, which is what a single measurement would roughly show.\n"
+            "- (d) the paper's clustering function: two clusters of size 1, then none, then two again. That on-off rhythm is the blinker.")
+
+
+def s_where():
+    head("Results: Where the Entanglement Lives (Paper Fig. 2)",
+         "Each cell gets entangled with the rest, but almost never with one single partner.")
+    r = run_chain(BLINKER)
+    tau, cells = r["tau"], np.arange(1, L + 1)
+    dist = np.abs(np.subtract.outer(cells, cells))
+    conc = np.array([[c[dist == d].mean() for d in range(1, 9)] for c in r["conc"]])
+    panels = [("(a) How entangled each cell is (bits)", tau, cells, r["S"].T, BLUES, 1, "cell"),
+              ("(b) Pair entanglement (concurrence) by distance", tau, np.arange(1, 9), conc.T, BLUES, 0.08, "distance")]
+    left, right = st.columns([0.7, 0.3], gap="large")
+    show(grid_fig(panels, 1, 2, 560), left)
+    right.markdown(f"""<div class="prose"><ul>
+<li>Single cells reach <b>{r['S'].max():.2f} bit</b>, the maximum.</li>
+<li>Pairs reach only <b>{conc.max():.2f}</b> of 1, mostly next-door cells.</li>
+<li>Yet the two halves share up to <b>{r['bond'][:, L // 2 - 1].max():.1f} bits</b>.</li>
+<li>So the entanglement is shared by many cells at once (multipartite), as the paper concludes.</li></ul></div>""",
+                   unsafe_allow_html=True)
+    return ("- (a) bright bands are the cells next to the blinker; they go dark when it revives.\n"
+            "- (b) averaged over all pairs the same distance apart; the paper's Fig. 2c tops out at about 0.08 too.\n"
+            "- Concurrence measures entanglement between exactly two cells; it can be small while the whole is very entangled.")
+
+
+def s_block():
+    head("Results: A Block of Live Cells (Paper Figs. 7 and 8)",
+         "Classical: the block breaks into fragments that keep moving. Quantum: it melts into an even, half-alive grey.",
+         "Entanglement grows steadily, then saturates: the larger the cut-off region, the more entanglement (volume law).")
+    r = run_block()
+    tau, cells, n = r["tau"], np.arange(1, 17), 16
+    left, right = st.columns([0.55, 0.45], gap="large")
+    panels = [("(a) Classical Life", np.arange(len(r["classical"])), cells, r["classical"].T, STONE, 1, "cell"),
+              ("(b) Quantum: chance alive", tau, cells, r["n"].T, STONE, 1, "cell")]
+    show(grid_fig(panels, 1, 2, 540), left)
+    f = make_subplots(2, 1, vertical_spacing=0.3, subplot_titles=("Entanglement between the two halves",
+                                                                   f"Entanglement at generation {tau[-1]:.0f}, by cut position"))
+    f.add_trace(go.Scatter(x=tau, y=r["bond"][:, n // 2 - 1], mode="lines", line=dict(color=BLUE, width=2.5),
+                           hovertemplate="generation %{x:.1f}: %{y:.2f} bits<extra></extra>"), 1, 1)
+    f.add_trace(go.Scatter(x=np.arange(1, n), y=r["bond"][-1], mode="lines+markers", line=dict(color=BLUE, width=2.5),
+                           marker=dict(size=8), hovertemplate="cut after cell %{x}: %{y:.2f} bits<extra></extra>"), 2, 1)
+    f.update_xaxes(title="generation", row=1, col=1)
+    f.update_xaxes(title="cut after cell", row=2, col=1)
+    f.update_yaxes(title="bits")
+    style(f, 560).update_layout(margin_t=40, showlegend=False)
+    f.update_annotations(font=dict(family="Calibri, Arial, sans-serif", size=17, color=INK))
+    show(f, right)
+    return ("- Paper: 0⁴1¹²0⁴ on 20 cells and 0⁴1²⁴0⁴ on 32. Ours: 0⁴1⁸0⁴ on 16 cells, the largest we can run exactly in seconds.\n"
+            f"- Half-chain entanglement reaches {r['bond'][:, n // 2 - 1].max():.2f} bits of a possible 8.\n"
+            "- Bottom right: a tent shape, rising by about 1 bit per cell from each end: entanglement grows with the size of the region.")
+
+
+def s_density():
+    head("Results: Random Boards, Long-Time Behaviour (Paper Fig. 11)",
+         "Start from random boards with a given fraction of live cells and wait until the board settles.",
+         "Quantum Life ends with more live cells than classical for starting densities of 0.5 to 0.65, and fewer at low and high densities.")
+    e = equilibrium()
+    a, b = st.columns(2, gap="large")
+    for col, key, title, yt in ((a, "dens", "Long-time density of live cells", "density"),
+                                (b, "div", "Long-time diversity: number of different cluster sizes", "diversity")):
+        f = go.Figure()
+        f.add_trace(go.Scatter(x=e["cl"]["rho"], y=e["cl"][key], name="classical", mode="lines+markers",
+                               line=dict(color=GREY, width=2, dash="dot"), marker=dict(size=7, color=GREY),
+                               hovertemplate="start %{x:.2f}: %{y:.2f}<extra>classical</extra>"))
+        f.add_trace(go.Scatter(x=e["q"]["rho"], y=e["q"][key], name="quantum", mode="markers",
+                               marker=dict(size=13, color=BLUE, symbol="square"),
+                               hovertemplate="start %{x:.2f}: %{y:.2f}<extra>quantum</extra>"))
+        f.update_xaxes(title="starting density", range=[-0.03, 1.03])
+        f.update_yaxes(title=yt, rangemode="tozero")
+        show(style(f, 520, title), col)
+    return ("- 16 cells, as in the paper's top row. Classical: all 65,536 boards, averaged over steps 83 to 100.\n"
+            "- Quantum: 4 random boards per density, averaged over paper time t = 25 to 30 (generations 15.9 to 19.1); "
+            "a cell counts as alive above 50%.\n"
+            "- Same shape as the paper: classical density rises steadily; quantum peaks in the middle (paper: 0.6 to 0.7), "
+            "then falls. Only 4 quantum boards per point, so expect some scatter.")
+
+
+def s_uses():
+    head("Applications and Benefits")
+    left, right = st.columns([0.55, 0.45], gap="large")
+    left.markdown("""<div class="prose"><h3>Where this model is useful</h3><ul>
+<li><b>Rydberg-atom simulators:</b> atoms that may only flip when their neighbours allow it follow the same kind of rule,
+so quantum Life can run natively on them.</li>
+<li><b>Benchmarking quantum computers:</b> noise destroys the blinker's revivals, so how much of the revival survives
+measures how good a device is.</li>
+<li><b>Models of computation:</b> quantum cellular automata can compute anything a quantum computer can, and are studied for
+preparing quantum states.</li>
+<li><b>Physics:</b> how complexity and entanglement emerge and spread; revivals like the blinker's (quantum many-body
+scars) have been seen in 51-atom experiments.</li></ul></div>""", unsafe_allow_html=True)
+    right.markdown("""<div class="prose"><h3>What our project adds</h3><ul>
+<li>A checked reproduction of the paper (check.py re-runs every comparison).</li>
+<li>Hardware-ready OpenQASM circuits, verified on C-DAC's Qniverse.</li>
+<li>A 2D extension the paper does not have.</li>
+<li>A visual way to teach superposition, interference and entanglement.</li></ul></div>""", unsafe_allow_html=True)
+    return ("- Rydberg link: Wintermantel et al., PRL 2020 (reference 5); the paper itself is funded by a Rydberg-atom programme.\n"
+            "- Scars: Bernien et al., Nature 2017 (reference 6). This connection is ours, not the paper's; say 'similar to', not 'the same as'.\n"
+            "- No speedup is claimed for anything here.")
 
 
 def s_entangle():
@@ -563,9 +763,29 @@ def b_explore():
     return "- For questions: any pattern of the 9 middle cells works."
 
 
-MAIN = [s_title, s_rule, s_objectives, s_paper, s_method, s_quantum, s_blinker, s_entangle, s_circuit, s_qniverse, s_2d,
-        s_close, s_conclusion, s_references, s_thanks]
-BACKUP = [b_rule, b_accuracy, b_explore]
+def b_time():
+    head("Backup: Time as an Axis",
+         "The blinker's whole history as a landscape: cell across, generation going back, height = chance the cell is alive.",
+         "Classical Life is flat plateaus that never repeat. Quantum Life is smooth ridges that come back near generation 7.5.")
+    r, T = run_chain(BLINKER), 15
+    k = r["tau"] <= T
+    fig = make_subplots(1, 2, specs=[[{"type": "scene"}] * 2], subplot_titles=("Classical", "Quantum"), horizontal_spacing=0.02)
+    for col, (t, z) in enumerate([(np.arange(T + 1), r["classical"][:T + 1]), (r["tau"][k], r["n"][k])], 1):
+        fig.add_trace(go.Surface(x=np.arange(1, L + 1), y=t, z=z, colorscale=STONE, cmin=0, cmax=1, showscale=False, opacity=0.95,
+                                 hovertemplate="cell %{x}<br>generation %{y:.1f}<br>alive %{z:.2f}<extra></extra>"), 1, col)
+    axes = dict(xaxis=dict(title="cell"), yaxis=dict(title="generation", autorange="reversed"),
+                zaxis=dict(title="alive", range=[0, 1]), camera=dict(eye=dict(x=1.7, y=-1.7, z=1.0)), aspectratio=dict(x=1, y=1.6, z=0.5))
+    fig.update_layout(scene=axes, scene2=axes)
+    fig.update_annotations(font=dict(family="Calibri, Arial, sans-serif", size=18, color=INK))
+    show(style(fig, 560).update_layout(margin_t=44))
+    return ("- Same data as the blinker slide's two heatmaps, viewed as height instead of shade. Drag to rotate.\n"
+            "- Classical: only 0 or 1, so flat steps. Quantum: values in between, so smooth ridges.\n"
+            "- Generations 0 to 15 only; at 7.5 the two start cells (6 and 8) rise back to about 0.8 alive, which is the 61% revival.")
+
+
+MAIN = [s_title, s_rule, s_objectives, s_paper, s_method, s_quantum, s_blinker, s_views, s_entangle, s_where, s_block,
+        s_density, s_circuit, s_qniverse, s_2d, s_close, s_uses, s_conclusion, s_references, s_thanks]
+BACKUP = [b_rule, b_accuracy, b_explore, b_time]
 SLIDES = MAIN + BACKUP
 
 # ---------- page ----------
@@ -594,14 +814,14 @@ with st.container(key="nav", horizontal=True):
     st.button("→", key="next", on_click=move, args=(1,), disabled=i == len(SLIDES) - 1)
 with st.container(key="keys"):
     st.iframe("""<script>
-const P = window.parent;
-P.__qgolNav = d => { const b = P.document.querySelector(d > 0 ? '.st-key-next button' : '.st-key-prev button'); if (b && !b.disabled) b.click(); };
-if (!P.__qgolKeys) {
-  P.__qgolKeys = true;
-  P.document.addEventListener('keydown', e => {
+// eval in the parent so the handlers outlive this iframe, which Streamlit may remount on any rerun
+window.parent.eval(`if (!window.__qgolKeys) {
+  window.__qgolKeys = true;
+  window.__qgolNav = d => { const b = document.querySelector(d > 0 ? '.st-key-next button' : '.st-key-prev button'); if (b && !b.disabled) b.click(); };
+  document.addEventListener('keydown', e => {
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-    if (['ArrowRight', 'PageDown'].includes(e.key)) { e.preventDefault(); P.__qgolNav(1); }
-    if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); P.__qgolNav(-1); }
+    if (['ArrowRight', 'PageDown'].includes(e.key)) { e.preventDefault(); window.__qgolNav(1); }
+    if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); window.__qgolNav(-1); }
   });
-}
+}`);
 </script>""", height=1)
